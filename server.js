@@ -47,36 +47,30 @@ const getAccessToken = async () => {
   throw new Error('获取 token 失败');
 };
 
-// 使用高精度通用文字识别 API
 const recognizeGeneralText = async (base64Data) => {
   const token = await getAccessToken();
   const url = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${token}`;
-  
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `image=${encodeURIComponent(base64Data)}`
   });
-  
   return await response.json();
 };
 
-// 使用增值税发票识别 API
 const recognizeVatInvoice = async (base64Data) => {
   const token = await getAccessToken();
   const url = `https://aip.baidubce.com/rest/2.0/ocr/v1/vat_invoice?access_token=${token}`;
-  
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `image=${encodeURIComponent(base64Data)}`
   });
-  
   return await response.json();
 };
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: '服务运行中', version: '2.0' });
+  res.json({ status: 'ok', message: '服务运行中', version: '2.1' });
 });
 
 app.get('/api/token', async (req, res) => {
@@ -89,7 +83,7 @@ app.get('/api/token', async (req, res) => {
 });
 
 app.post('/api/recognize', upload.single('image'), async (req, res) => {
-  console.log('收到识别请求:', req.file?.originalname, req.file?.mimetype);
+  console.log('收到识别请求:', req.file?.originalname);
   
   try {
     if (!req.file) {
@@ -100,18 +94,15 @@ app.post('/api/recognize', upload.single('image'), async (req, res) => {
     const fileBuffer = fs.readFileSync(filePath);
     const base64Data = fileBuffer.toString('base64');
 
-    // 首先尝试增值税发票识别
     let data = await recognizeVatInvoice(base64Data);
     let usedApi = 'vat_invoice';
     
-    // 如果失败，尝试通用文字识别
     if (data.error_code) {
       console.log('增值税发票识别失败:', data.error_msg);
       data = await recognizeGeneralText(base64Data);
       usedApi = 'general_text';
     }
 
-    // 删除临时文件
     fs.unlinkSync(filePath);
 
     if (data.error_code) {
@@ -127,21 +118,32 @@ app.post('/api/recognize', upload.single('image'), async (req, res) => {
     let projectName = '*其他服务*服务费';
 
     if (Array.isArray(result)) {
-      // 通用文字识别结果
       const text = result.map(item => item.words).join(' ');
-      const amountMatches = text.match(/[¥￥]\s*(\d+\.?\d*)/g);
-      if (amountMatches) {
-        amount = parseFloat(amountMatches[amountMatches.length - 1].replace(/[¥￥]\s*/g, '')) || 0;
-      }
-      const dateMatch = text.match(/(\d{4}[年/-]\d{1,2}[月/-]\d{1,2})/);
-      if (dateMatch) invoiceDate = dateMatch[1];
+      console.log('识别文本:', text);
       
-      if (text.includes('住宿')) projectName = '*住宿服务*住宿费';
-      else if (text.includes('餐饮')) projectName = '*餐饮服务*餐饮服务';
+      // 提取金额
+      const amountMatches = text.match(/[¥￥]\s*(\d+[.,]?\d*)/g);
+      console.log('金额匹配:', amountMatches);
+      
+      if (amountMatches && amountMatches.length > 0) {
+        const lastAmount = amountMatches[amountMatches.length - 1];
+        amount = parseFloat(lastAmount.replace(/[¥￥]\s*/g, '').replace(',', '')) || 0;
+        console.log('提取金额:', amount);
+      }
+      
+      // 提取日期
+      const dateMatch = text.match(/(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})/);
+      if (dateMatch) {
+        invoiceDate = `${dateMatch[1]}年${dateMatch[2].padStart(2, '0')}月${dateMatch[3].padStart(2, '0')}日`;
+      }
+      
+      // 提取项目名称
+      if (text.includes('住宿') || text.includes('酒店')) projectName = '*住宿服务*住宿费';
+      else if (text.includes('餐饮') || text.includes('餐费')) projectName = '*餐饮服务*餐饮服务';
       else if (text.includes('代驾')) projectName = '*生活服务*代驾服务费';
-      else if (text.includes('出租')) projectName = '*运输服务*出租汽车客运服务';
+      else if (text.includes('出租') || text.includes('交通')) projectName = '*运输服务*出租汽车客运服务';
+      
     } else {
-      // 增值税发票识别结果
       if (result.amount_in_figures) {
         amount = parseFloat(String(result.amount_in_figures).replace(/[¥￥,]/g, '')) || 0;
       }
@@ -153,6 +155,8 @@ app.post('/api/recognize', upload.single('image'), async (req, res) => {
         projectName = result.commodity_name[0].word || result.commodity_name[0];
       }
     }
+
+    console.log('最终结果:', { amount, invoiceDate, projectName });
 
     res.json({
       success: true,
