@@ -15,16 +15,31 @@ let tokenExpireTime = 0;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 } });
+// 支持图片和 PDF
+const upload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'image/jpeg', 'image/png', 'image/jpg', 'application/pdf'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('不支持的文件类型，请上传 JPG、PNG 或 PDF 文件'));
+    }
+  }
+});
+
+if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
 
 const getAccessToken = async () => {
   if (accessToken && Date.now() < tokenExpireTime) return accessToken;
-  
   const url = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${API_KEY}&client_secret=${SECRET_KEY}`;
   const response = await fetch(url, { method: 'POST' });
   const data = await response.json();
-  
   if (data.access_token) {
     accessToken = data.access_token;
     tokenExpireTime = Date.now() + (data.expires_in || 2592000) * 1000;
@@ -46,21 +61,27 @@ app.get('/api/token', async (req, res) => {
   }
 });
 
+// 支持图片和 PDF 识别
 app.post('/api/recognize', upload.single('image'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: '请上传图片' });
-    }
+    if (!req.file) return res.status(400).json({ success: false, message: '请上传文件' });
 
     const token = await getAccessToken();
     const fileBuffer = fs.readFileSync(req.file.path);
-    const base64Image = fileBuffer.toString('base64');
+    const base64Data = fileBuffer.toString('base64');
 
+    const isPDF = req.file.mimetype === 'application/pdf';
     const url = `https://aip.baidubce.com/rest/2.0/ocr/v1/vat_invoice?access_token=${token}`;
+    
+    // 百度云 API 支持 PDF 文件，使用 pdf_file 参数
+    const requestBody = isPDF 
+      ? `pdf_file=${encodeURIComponent(base64Data)}`
+      : `image=${encodeURIComponent(base64Data)}`;
+
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `image=${encodeURIComponent(base64Image)}`
+      body: requestBody
     });
 
     fs.unlinkSync(req.file.path);
@@ -99,4 +120,5 @@ app.post('/api/recognize', upload.single('image'), async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`服务运行在端口 ${PORT}`);
+  console.log('支持格式: JPG, PNG, PDF');
 });
